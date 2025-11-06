@@ -1,10 +1,28 @@
+import 'dart:async'; //timer coundown
 import 'package:flutter/material.dart';
+import 'package:carousel_slider/carousel_slider.dart'; //caroulsel slider
+import 'package:http/http.dart' as http; //mengambil data
+import 'package:geolocator/geolocator.dart'; //decade json
+import 'package:geocoding/geocoding.dart'; //GPS
+import 'package:intl/intl.dart'; //formater nummber
+import 'package:permission_handler/permission_handler.dart'; //izin handler
+import 'package:shared_preferences/shared_preferences.dart'; // chace lokal
+import 'package:string_similarity/string_similarity.dart'; //fuzzy match
 
-class HomePage extends StatelessWidget {
+class HomePage extends StatefulWidget {
   const HomePage({super.key});
 
+  @override
+  State<HomePage> createState() => _HomePageState();
+}
+
+class _HomePageState extends State<HomePage> {
+  final CarouselController _controller = CarouselController();
+
   final posterList = const <String>[
-    
+    'assets/images/ramadan-kareem.png',
+    'assets/images/idl-adh.png',
+    'assets/images/idh-fitr.png',
   ];
 
   @override
@@ -123,9 +141,34 @@ class HomePage extends StatelessWidget {
                 ),
               ),
             ),
+
+            /**
+             * ===================
+             *  carousel section
+             * ===================
+             */
+            _buildCarouselSection(),
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildCarouselSection() {
+    return Column(
+      children: [
+        const SizedBox(height: 20),
+        CarouselSlider.builder(
+          itemCount: posterList.length,
+          itemBuilder: (context, index, realIndex) {
+            final poster = posterList[index];
+            return Container(
+              child: Image.asset(poster),
+            );
+          },
+          options: CarouselOptions(),
+        ),
+      ],
     );
   }
 }
