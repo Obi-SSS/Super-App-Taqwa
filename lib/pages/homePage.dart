@@ -17,7 +17,8 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  final CarouselController _controller = CarouselController();
+  final CarouselController _controllera = CarouselController();
+  int _currentIndex = 0;
 
   final posterList = const <String>[
     'assets/images/ramadan-kareem.png',
@@ -163,12 +164,55 @@ class _HomePageState extends State<HomePage> {
           itemBuilder: (context, index, realIndex) {
             final poster = posterList[index];
             return Container(
-              child: Image.asset(poster),
+              child: Container(
+                margin: EdgeInsets.all(15),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(20),
+                  child: Image.asset(
+                    poster,
+                    width: double.infinity,
+                    fit: BoxFit.cover,
+                  ),
+                ),
+              ),
             );
           },
-          options: CarouselOptions(),
+          options: CarouselOptions(
+            autoPlay: true,
+            height: 300,
+            enlargeCenterPage: true,
+            viewportFraction: 0.7,
+            onPageChanged: (index, reason) => {
+              setState(() => _currentIndex = index),
+            },
+          ),
+        ),
+
+        //dot indikator coroulsel
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: posterList.asMap().entries.map((entry) {
+            return GestureDetector(
+              onTap: () => _currentIndex.animateToPage(entry.key),
+              child: Container(
+                height: 10,
+                width: 10,
+                margin: EdgeInsets.all(2),
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: _currentIndex == entry.key
+                      ? Colors.amber
+                      : Colors.grey[400],
+                ),
+              ),
+            );
+          }).toList(),
         ),
       ],
     );
   }
+}
+
+extension on int {
+  void animateToPage(int key) {}
 }
