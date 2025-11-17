@@ -1,4 +1,5 @@
 import 'dart:async'; //timer coundown
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:carousel_slider/carousel_slider.dart'; //caroulsel slider
 import 'package:http/http.dart' as http; //mengambil data
@@ -20,11 +21,12 @@ class _HomePageState extends State<HomePage> {
   final CarouselController _controller = CarouselController();
   int _currentIndex = 0;
   bool _isLoading = true;
-  Duration? _timeReamining;
+  Duration? _timeRemaining;
   Timer? _countDownTimer;
   String _location = "mengambil lokasi";
-  String _prayTime = "loading....";
-  String _backgrounImage = 'assets/images/bg_morning.png';
+  String _prayerTime = "loading....";
+  String _prayerName = "loading....";
+  String _backgroundImage = 'assets/images/bg_morning.png';
   List<dynamic>? _jadwalSholat;
 
   // fungsi text remaining waktu sholat
@@ -44,7 +46,270 @@ class _HomePageState extends State<HomePage> {
     'assets/images/ramadan-kareem.jpg',
   ];
 
-  Future _getBackgroundImage(DateTime now) async {
+  @override
+  void initState() {
+    super.initState();
+    _updatePrayerTimes(); // jalankan saat awal
+  }
+
+  // ================================================================
+  // LOGIKA INTI: UPDATE DATA WAKTU SHOLAT & LOKASI
+  // ================================================================
+  /// 🔹 Mengambil lokasi, mendeteksi kota terdekat, dan memuat jadwal sholat
+  ///
+  /// Diagram alur:
+  ///
+  ///  [GPS Position]
+  ///  [Kota terdekat (fuzzy match)]
+  ///  [Ambil data GitHub jadwal sholat]
+  ///  [Hitung waktu sholat terdekat + countdown]
+
+  Future<void> _updatePrayerTimes() async {
+    setState(() => _isLoading = true);
+
+    if (await _requestLocationPermission()) {
+      try {
+        // Ambil posisi GPS user (timeout 10 detik)
+        Position position =
+            await Geolocator.getCurrentPosition(
+              desiredAccuracy: LocationAccuracy.high,
+            ).timeout(
+              const Duration(seconds: 10),
+              onTimeout: () =>
+                  throw Exception("Gagal mendapatkan lokasi (timeout)"),
+            );
+
+        // Cari kota terdekat dari koordinat
+        String city;
+        try {
+          city = await getClosestCity(position.latitude, position.longitude);
+        } catch (_) {
+          city = "semarang"; // fallback default
+        }
+
+        // Konversi koordinat ke nama lokasi manusiawi
+        List<Placemark> placemarks = await placemarkFromCoordinates(
+          position.latitude,
+          position.longitude,
+        );
+        Placemark place = placemarks.isNotEmpty
+            ? placemarks.first
+            : Placemark();
+
+        // Ambil bulan & tahun sekarang
+        String month = DateFormat('MM').format(DateTime.now());
+        String year = DateFormat('yyyy').format(DateTime.now());
+
+        // Ambil jadwal sholat & hitung waktu terdekat
+        _jadwalSholat = await fetchJadwalSholat(city, month, year);
+        _calculateNextPrayer();
+
+        // Update tampilan UI
+        setState(() {
+          _location =
+              "${place.subAdministrativeArea ?? ''}, ${place.locality ?? ''}";
+          _backgroundImage = _getBackgroundImage(DateTime.now());
+          _isLoading = false;
+        });
+      } catch (e) {
+        _showErrorDialog("Gagal mengambil data: ${e.toString()}");
+        setState(() => _isLoading = false);
+      }
+    } else {
+      _showErrorDialog(
+        "Izin lokasi ditolak. Aktifkan lokasi untuk melanjutkan.",
+      );
+      setState(() => _isLoading = false);
+    }
+  }
+
+  // ================================================================
+  // API CALL: AMBIL DATA JADWAL SHOLAT DARI GITHUB
+  // ================================================================
+  /// 🔹 Mengambil data JSON jadwal sholat berdasarkan kota, bulan, dan tahun.
+  /// 🔹 Data disimpan ke cache agar bisa diakses offline.
+  Future<List<dynamic>> fetchJadwalSholat(
+    String city,
+    String month,
+    String year,
+  ) async {
+    final prefs = await SharedPreferences.getInstance();
+    final cacheKey = "$city-$year-$month";
+
+    // Gunakan cache jika tersedia
+    final cachedData = prefs.getString(cacheKey);
+    if (cachedData != null) {
+      return json.decode(cachedData) as List<dynamic>;
+    }
+
+    // Fetch dari GitHub repo jadwalsholatorg
+    final url =
+        'https://raw.githubusercontent.com/lakuapik/jadwalsholatorg/master/adzan/$city/$year/$month.json';
+    final response = await http.get(Uri.parse(url));
+
+    if (response.statusCode == 200) {
+      await prefs.setString(cacheKey, response.body);
+      return json.decode(response.body) as List<dynamic>;
+    }
+
+    // Fallback ke data tahun 2019 jika gagal
+    final fallbackUrl =
+        'https://raw.githubusercontent.com/lakuapik/jadwalsholatorg/master/adzan/$city/2019/$month.json';
+    final fallbackResponse = await http.get(Uri.parse(fallbackUrl));
+
+    if (fallbackResponse.statusCode == 200) {
+      await prefs.setString(cacheKey, fallbackResponse.body);
+      return json.decode(fallbackResponse.body) as List<dynamic>;
+    }
+
+    throw Exception('Gagal memuat jadwal sholat untuk $city ($month-$year)');
+  }
+
+  // ================================================================
+  // LOGIKA FUZZY MATCH: DETEKSI KOTA TERDEKAT
+  // ================================================================
+  /// 🔹 Mencocokkan nama kota pengguna dengan daftar kota dari GitHub.
+  ///
+  /// 🔸 Contoh:
+  /// "Jakarta Selatan" → dicocokkan → "jakarta"
+  Future<String> getClosestCity(double userLat, double userLon) async {
+    final response = await http.get(
+      Uri.parse(
+        'https://raw.githubusercontent.com/lakuapik/jadwalsholatorg/master/kota.json',
+      ),
+    );
+    if (response.statusCode != 200) throw Exception('Gagal memuat daftar kota');
+
+    final List<dynamic> cityList = json.decode(response.body);
+    List<Placemark> placemarks = await placemarkFromCoordinates(
+      userLat,
+      userLon,
+    );
+    Placemark place = placemarks.first;
+
+    String userCity =
+        (place.subAdministrativeArea ??
+                place.locality ??
+                place.administrativeArea ??
+                "")
+            .toLowerCase()
+            .replaceAll(" ", "");
+
+    double bestScore = 0.0;
+    String bestMatch = cityList.first;
+    for (var city in cityList) {
+      double score = city.toString().similarityTo(userCity);
+      if (score > bestScore) {
+        bestScore = score;
+        bestMatch = city.toString();
+      }
+    }
+    return bestMatch;
+  }
+
+  // ================================================================
+  // PERHITUNGAN: WAKTU SHOLAT BERIKUTNYA & COUNTDOWN
+  // ================================================================
+  /// 🔹 Menghitung waktu sholat berikutnya berdasarkan jadwal hari ini.
+  /// 🔹 Menampilkan countdown waktu tersisa.
+  void _calculateNextPrayer() {
+    if (_jadwalSholat == null || _jadwalSholat!.isEmpty) return;
+
+    final now = DateTime.now();
+    final format = DateFormat('HH:mm');
+    final todayDate = DateFormat('yyyy-MM-dd').format(now);
+
+    var todaySchedule = _jadwalSholat?.firstWhere(
+      (e) => e['tanggal'] == todayDate,
+      orElse: () => null,
+    );
+    if (todaySchedule == null) return;
+
+    // Helper untuk parsing waktu
+    DateTime parseTime(String hhmm) {
+      final t = format.parse(hhmm);
+      return DateTime(now.year, now.month, now.day, t.hour, t.minute);
+    }
+
+    // Peta jadwal sholat
+    final prayers = {
+      "Shubuh": parseTime(todaySchedule['shubuh']),
+      "Dzuhur": parseTime(todaySchedule['dzuhur']),
+      "Ashar": parseTime(todaySchedule['ashr']),
+      "Maghrib": parseTime(todaySchedule['magrib']),
+      "Isya": parseTime(todaySchedule['isya']),
+    };
+
+    // Cari waktu sholat berikutnya
+    String nextPrayer = "Shubuh";
+    Duration? closest;
+    prayers.forEach((name, time) {
+      final diff = time.difference(now);
+      if (diff > Duration.zero && (closest == null || diff < closest!)) {
+        closest = diff;
+        nextPrayer = name;
+      }
+    });
+
+    setState(() {
+      _prayerName = nextPrayer;
+      _timeRemaining = closest;
+      _prayerTime = closest != null
+          ? DateFormat('HH:mm').format(prayers[nextPrayer]!)
+          : "N/A";
+    });
+
+    // Timer countdown
+    _countDownTimer?.cancel();
+    _countDownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      final remaining = prayers[nextPrayer]!.difference(DateTime.now());
+      if (remaining.isNegative) {
+        timer.cancel();
+        _calculateNextPrayer();
+      } else {
+        setState(() => _timeRemaining = remaining);
+      }
+    });
+  }
+
+  // ================================================================
+  // PERMINTAAN IZIN AKSES LOKASI
+  // ================================================================
+  /// 🔹 Meminta izin lokasi dari pengguna.
+  Future<bool> _requestLocationPermission() async {
+    var status = await Permission.location.status;
+    if (status.isGranted) return true;
+    if (status.isDenied) {
+      status = await Permission.location.request();
+      return status.isGranted;
+    }
+    if (status.isPermanentlyDenied) {
+      await openAppSettings();
+    }
+    return false;
+  }
+
+  // ================================================================
+  // DIALOG ERROR
+  // ================================================================
+  /// 🔹 Menampilkan dialog jika terjadi kesalahan (mis. gagal lokasi).
+  void _showErrorDialog(String msg) {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text("Terjadi Kesalahan"),
+        content: Text(msg),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text("OK"),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _getBackgroundImage(DateTime now) {
     if (now.hour < 12) {
       return 'assets/images/bg_morning.png';
     } else if (now.hour < 18) {
@@ -104,7 +369,7 @@ class _HomePageState extends State<HomePage> {
               bottomLeft: Radius.circular(30),
             ),
             image: DecorationImage(
-              image: AssetImage('assets/images/bg_afternoon.png'),
+              image: AssetImage(_backgroundImage),
               fit: BoxFit.cover,
             ),
           ),
@@ -123,7 +388,7 @@ class _HomePageState extends State<HomePage> {
                   ),
                 ),
                 Text(
-                  'Ngargoyoso',
+                  _location,
                   style: TextStyle(
                     fontFamily: 'PoppinsSemiBold',
                     fontSize: 22,
